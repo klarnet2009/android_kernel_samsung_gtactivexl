@@ -1712,6 +1712,10 @@ static int parse_cgroupfs_options(char *data, struct cgroup_sb_opts *opts)
 			opts->flags |= CGRP_ROOT_NOPREFIX;
 			continue;
 		}
+		/* Android 12+ libprocessgroup mounts cpuset with "noprefix,cpuset_v2_mode"; the 4.9 kernel
+		 * has no v2-style hotplug restore, so just accept the option instead of failing with -ENOENT. */
+		if (!strcmp(token, "cpuset_v2_mode"))
+			continue;
 		if (!strcmp(token, "clone_children")) {
 			opts->cpuset_clone_children = true;
 			continue;

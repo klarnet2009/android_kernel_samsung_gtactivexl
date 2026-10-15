@@ -1,0 +1,14 @@
+# NetBpfLoad skips the LPM_TRIE map local_net_access_map on kernels < 4.14, so Android 16's BpfNetMaps fails to
+# initialize and later throws a NullPointerException on every app update/uninstall (system_server crash).
+# Pin a same-sized HASH map right after the loader, in the loader's own SELinux domain (the map takes its creator's label).
+service bpf_localnet_stub /system/bin/bpf_localnet_stub
+    user root
+    group root
+    capabilities CHOWN SYS_ADMIN NET_ADMIN
+    seclabel u:r:bpfloader:s0
+    rlimit memlock 1073741824 1073741824
+    oneshot
+    disabled
+
+on load-bpf-programs
+    exec_start bpf_localnet_stub

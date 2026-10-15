@@ -24,6 +24,7 @@ The first commit of this repository is that drop **unmodified**; every change is
 | Makefile: build with clang directly | no `gcc-wrapper.py`; `cc-disable-warning` for `-Wno-undefined-optimized` |
 | cgroup: accept the `cpuset_v2_mode` mount option | required for Android 12+; without it Android 16 never gets its cpuset hierarchy |
 | tooling | `sm-t545/build.sh`, `sm-t545/mkboot.py`, this README |
+| Android 16 BPF map stub | `android16/bpf_localnet_stub.c` + init rc: fixes `system_server` crashing on every app update/uninstall (see below) |
 
 The "clean" configuration is **not** a new defconfig: `sm-t545/build.sh` takes Samsung's
 `sdm670_sec_gtactivexl_eur_open_defconfig` and applies a short option list with `scripts/config`
@@ -61,6 +62,30 @@ header is identical to it and pads the image to the 64 MiB boot partition.
 
 The Android side (system image, `vbmeta` with verification disabled, SELinux rules for the Android 11 vendor on an
 Android 16 system) is outside this repository.
+
+## Android 16 on this kernel: required userspace fix (BPF map stub)
+
+On a 4.9 kernel the Android 16 Connectivity module cannot create its `local_net_access_map` (`BPF_MAP_TYPE_LPM_TRIE`; the
+loader skips it below kernel 4.14 and this tree has no `lpm_trie.c`). `BpfNetMaps.initBpfMaps()` then aborts before it assigns
+`sLocalNetBlockedUidMap`, and **every app update or uninstall** (`PACKAGE_REMOVED`) kills `system_server` with a
+`NullPointerException` in `BpfNetMaps.removeUidFromLocalNetBlockMap` - the UI "soft reboots" (black screen, boot animation again),
+repeatedly while Play Store updates its apps after the first setup.
+
+`android16/bpf_localnet_stub.c` is a 2 KB freestanding aarch64 program that pins a same-sized HASH map
+(key 28 B, value 1 B, 1000 entries) at `/sys/fs/bpf/netd_shared/map_netd_local_net_access_map` (`root:net_bw_acct`, `0660`).
+The local-network access feature stays inactive, exactly as on any pre-4.14 kernel.
+
+```sh
+clang --target=aarch64-linux-gnu -O2 -static -nostdlib -ffreestanding -fno-stack-protector -fno-builtin -fno-pic       -fuse-ld=lld -Wl,-e,_start -Wl,--build-id=none -Wl,-z,norelro -o bpf_localnet_stub android16/bpf_localnet_stub.c
+# install into the system image: /system/bin/bpf_localnet_stub  (mode 0755, SELinux label u:object_r:bpfloader_exec:s0)
+#                                /system/etc/init/zz_bpf_localnet.rc  (android16/zz_bpf_localnet.rc)
+```
+
+Two things matter: the init service must run in the **`bpfloader` SELinux domain** (the rc does `seclabel u:r:bpfloader:s0`;
+a BPF map takes the label of its creator, so a map created from `adb root`/`su` is denied to `system_server`), and it must run
+right after the loader (`on load-bpf-programs` in the rc, which is processed after init.rc's own `exec_start bpfloader`).
+Check: `dmesg | grep bpf_localnet_stub` shows the service started in `u:r:bpfloader:s0`, `ls -lZ /sys/fs/bpf/netd_shared/map_netd_local_net_access_map` exists,
+and `am broadcast -a android.intent.action.PACKAGE_REMOVED -d package:x --ei android.intent.extra.UID 1019999 --user 0` no longer crashes `system_server`.
 
 ## Known limits
 
